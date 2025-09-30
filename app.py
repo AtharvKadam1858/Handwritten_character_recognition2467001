@@ -1,49 +1,85 @@
 import streamlit as st
 import numpy as np
-import tensorflow as tf
-from tensorflow.keras.models import load_model
 from PIL import Image, ImageOps
+import tensorflow as tf
 
-# Load mapping
-def load_mapping():
+# -------------------------
+# Load mapping file
+# -------------------------
+def load_mapping(file_path="emnist-balanced-mapping.txt"):
     mapping = {}
-    with open("emnist-balanced-mapping.txt", "r") as f:
+    with open(file_path, "r") as f:
         for line in f:
-            key, val = line.strip().split()
-            mapping[int(key)] = chr(int(val))
+            idx, code = line.strip().split()
+            mapping[int(idx)] = chr(int(code))
     return mapping
 
-# Load trained model
-@st.cache_resource
-def load_trained_model():
-    return load_model("emnist_manual_cnn.h5")
+# -------------------------
+# Preprocess uploaded image
+# -------------------------
+def preprocess_image(image):
+    # Convert to grayscale
+    img = image.convert("L")
 
-model = load_trained_model()
-mapping = load_mapping()
+    # Ensure compatibility with Pillow versions
+    if hasattr(Image, "Resampling"):
+        RESAMPLE = Image.Resampling.LANCZOS
+    else:
+        RESAMPLE = Image.ANTIALIAS
 
-st.title("🖐️ Handwritten Character Recognition")
-st.markdown("Upload a **28x28 grayscale** handwritten image (A-Z, 0-9).")
+    # Resize to 28x28 (like EMNIST dataset)
+    img = img.resize((28, 28), RESAMPLE)
 
-uploaded_file = st.file_uploader("📤 Upload your image", type=["png", "jpg", "jpeg"])
+    # Invert colors (EMNIST expects white text on black background)
+    img = ImageOps.invert(img)
 
-if uploaded_file:
-    image = Image.open(uploaded_file).convert("L")
+    # Normalize
+    img_array = np.array(img) / 255.0
+    img_array = img_array.reshape(1, 28, 28, 1)
 
-    # ✅ Rotate and Flip to match EMNIST format
-    image_resized = image.resize((28, 28)).transpose(Image.ROTATE_270).transpose(Image.FLIP_LEFT_RIGHT)
-    image_resized = ImageOps.invert(image_resized)
+    return img_array
 
-    st.image(image_resized, caption="Uploaded Image", width=150)
+# -------------------------
+# Predict character
+# -------------------------
+def predict(image, model, mapping):
+    img_array = preprocess_image(image)
+    predictions = model.predict(img_array)
+    predicted_class = np.argmax(predictions, axis=1)[0]
+    return mapping.get(predicted_class, "Unknown")
 
-    img_array = np.array(image_resized).reshape(1, 28, 28, 1).astype("float32") / 255.0
+# -------------------------
+# Streamlit App
+# -------------------------
+st.title("✍️ Handwritten Character Recognition — Improved")
 
-    prediction = model.predict(img_array)
-    predicted_class = np.argmax(prediction)
-    confidence = 100 * np.max(prediction)
+# Upload model
+uploaded_model = st.file_uploader("Upload Keras model (.h5)", type=["h5"])
+# Upload mapping
+uploaded_mapping = st.file_uploader("Upload mapping file (.txt)", type=["txt"])
 
-    predicted_char = mapping[predicted_class]
+if uploaded_model and uploaded_mapping:
+    # Save uploaded files temporarily
+    with open("model.h5", "wb") as f:
+        f.write(uploaded_model.getbuffer())
+    with open("mapping.txt", "wb") as f:
+        f.write(uploaded_mapping.getbuffer())
 
-    st.success(f"✅ Predicted Character: **{predicted_char}**")
-    st.progress(int(confidence))
-    st.caption(f"Confidence: {confidence:.2f}%")
+    # Load model + mapping
+    model = tf.keras.models.load_model("model.h5")
+    mapping = load_mapping("mapping.txt")
 
+    # Upload image
+    uploaded_img = st.file_uploader("Upload an image (jpg/png)", type=["jpg", "png", "jpeg"])
+    if uploaded_img:
+        image = Image.open(uploaded_img)
+        st.image(image, caption="Original upload", use_container_width=True)
+
+        if st.button("Predict"):
+            try:
+                prediction = predict(image, model, mapping)
+                st.success(f"✅ Predicted Character: **{prediction}**")
+            except Exception as e:
+                st.error(f"Prediction failed: {e}")
+else:
+    st.info("Please upload both the **.h5 model file** and the **mapping file (.txt)** to start.")
